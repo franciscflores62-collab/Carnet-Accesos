@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Generador de Carnets desde Solicitud (Word)</title>
+
+<!--
+  Generador de Carnets desde Solicitud individual en Word
+  Basado en:
+  - Formato para solicitud de carnet Accesos/Identificación (.docx, uno por persona)
+  - Copia de carnet.docx (imagen de referencia del diseño final del carnet)
+
+  Cada solicitud en Word se procesa en el navegador (no se sube a ningún servidor):
+  se extrae el nombre desde la fila "Nombre:" de la tabla y la fotografía
+  incrustada en el documento, usando JSZip para leer el .docx como archivo ZIP.
+-->
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+<style>
+:root{
+  --gildan-blue:#1f4e9e;
+  --gildan-dark:#173b78;
+  --light:#f4f6fa;
+  --border:#c9ced8;
+  --danger:#d62828;
+  --ok:#197a43;
+  --navy:#14206b;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:Arial,Helvetica,sans-serif;
+  background:#eef1f5;
+  color:#111;
+}
+.app{
+  max-width:1250px;
+  margin:0 auto;
+  padding:22px;
+}
+header{
+  background:#fff;
+  border:1px solid #d8dde6;
+  border-radius:14px;
+  padding:18px 22px;
+  display:flex;
+  align-items:center;
+  gap:18px;
+  box-shadow:0 3px 12px rgba(0,0,0,.06);
+}
+header img{width:190px;height:auto}
+header h1{margin:0;font-size:24px;color:var(--gildan-dark)}
+header p{margin:5px 0 0;color:#606773}
+.panel{
+  background:#fff;
+  border:1px solid #d8dde6;
+  border-radius:14px;
+  padding:18px;
+  margin-top:16px;
+  box-shadow:0 3px 12px rgba(0,0,0,.05);
+}
+.toolbar{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  align-items:center;
+}
+button,.file-label{
+  border:0;
+  border-radius:8px;
+  padding:11px 16px;
+  font-weight:700;
+  cursor:pointer;
+  font-size:14px;
+}
+.primary{background:var(--gildan-blue);color:white}
+.secondary{background:#e9edf4;color:#1b2430}
+.danger{background:var(--danger);color:white}
+.green{background:var(--ok);color:white}
+input[type=file]{display:none}
+.file-label{background:var(--gildan-blue);color:#fff;display:inline-block}
+.status{
+  margin-top:12px;
+  padding:11px 13px;
+  background:#f6f8fb;
+  border:1px solid #e0e4eb;
+  border-radius:8px;
+  font-size:14px;
+}
+.status.ok{background:#eaf7ef;border-color:#bfe3cc;color:#155c31}
+.warning{
+  margin-top:12px;
+  padding:11px 13px;
+  background:#fff6e5;
+  border:1px solid #f3ddab;
+  border-radius:8px;
+  font-size:13.5px;
+  color:#7a5b00;
+}
+table{width:100%;border-collapse:collapse;margin-top:14px;font-size:13.5px}
+th,td{border:1px solid #e2e6ee;padding:8px 10px;text-align:left}
+th{background:#f4f6fa}
+td input[type=text]{
+  width:100%;padding:6px 8px;border:1px solid #cfd5df;border-radius:6px;font-size:13px;
+}
+.help{color:#606773;font-size:13.5px;margin:6px 0 0}
+.empty{color:#8a919c;padding:20px;text-align:center}
+.hidden{display:none}
+
+/* ===== Vista previa de carnets (pantalla) ===== */
+.preview-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(170px,1fr));
+  gap:16px;
+  margin-top:16px;
+}
+.preview-card h3{
+  font-size:12px;margin:0 0 6px;color:#333;font-weight:700;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.mini-card{
+  width:100%;
+  aspect-ratio:2.15/3.4;
+  border:1px solid #d3d3d3;
+  border-radius:6px;
+  background:#fff;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  text-align:center;
+  padding:6% 5%;
+}
+.mini-card .logo{width:78%;height:auto;margin-bottom:6%}
+.mini-card .photo{
+  width:62%;
+  aspect-ratio:3/3.6;
+  object-fit:cover;
+  border:1px solid #333;
+  background:#eee;
+  margin-bottom:6%;
+}
+.mini-card .photo.placeholder{
+  display:flex;align-items:center;justify-content:center;
+  font-size:7px;color:#888;font-weight:700;
+}
+.mini-card .name{
+  font-weight:800;color:var(--navy);text-transform:uppercase;
+  font-size:9.5px;line-height:1.25;margin-bottom:6%;
+}
+.mini-card .planta{
+  font-weight:800;color:var(--navy);text-transform:uppercase;
+  font-size:9.5px;line-height:1.25;
+  border-bottom:1.5px solid var(--navy);
+  min-width:70%;min-height:12px;
+}
+
+@media print{
+  body *{visibility:hidden}
+  #printArea, #printArea *{visibility:visible}
+  #printArea{position:absolute;left:0;top:0;width:100%}
+  @page{size:letter;margin:.4in}
+  *{
+    -webkit-print-color-adjust:exact!important;
+    print-color-adjust:exact!important;
+    color-adjust:exact!important;
+  }
+  .print-grid{
+    display:grid;
+    grid-template-columns:repeat(3,2.15in);
+    grid-auto-rows:3.4in;
+    gap:.25in;
+    justify-content:center;
+  }
+  .print-card{
+    width:2.15in;
+    height:3.4in;
+    border:1px solid #bbb;
+    border-radius:4px;
+    padding:.14in .1in;
+    box-sizing:border-box;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    text-align:center;
+    break-inside:avoid;
+    page-break-inside:avoid;
+  }
+  .print-card .logo{width:80%;height:auto;margin-bottom:.12in}
+  .print-card .photo{
+    width:1.45in;
+    height:1.65in;
+    object-fit:cover;
+    border:1px solid #222;
+    background:#eee;
+    margin-bottom:.12in;
+  }
+  .print-card .photo.placeholder{
+    display:flex;align-items:center;justify-content:center;
+    font-size:8pt;color:#888;font-weight:700;
+  }
+  .print-card .name{
+    font-weight:800;color:#14206b;text-transform:uppercase;
+    font-size:11pt;line-height:1.22;margin-bottom:.12in;
+  }
+  .print-card .planta{
+    font-weight:800;color:#14206b;text-transform:uppercase;
+    font-size:11pt;line-height:1.22;
+    border-bottom:1.5px solid #14206b;
+    min-width:75%;min-height:.24in;
+  }
+}
+#printArea{display:none}
+@media print{ #printArea{display:block} }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <img src="data:image/png;base64,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" alt="Gildan">
+    <div>
+      <h1>Generador de Carnets desde Solicitud (Word)</h1>
+      <p>Cargue una o varias solicitudes en Word (una por persona) y genere los carnets listos para imprimir.</p>
+    </div>
+  </header>
+
+  <section class="panel">
+    <div class="toolbar">
+      <label class="file-label" for="wordFiles">&#128193; Cargar Word(s)</label>
+      <input id="wordFiles" type="file" accept=".docx" multiple>
+      <button id="previewBtn" class="secondary" disabled>&#128065; Vista previa</button>
+      <button id="printBtn" class="green" disabled>&#128424; Imprimir / Guardar PDF</button>
+      <button id="clearBtn" class="danger">Limpiar</button>
+    </div>
+    <div id="status" class="status">Seleccione una o varias solicitudes en Word (.docx).</div>
+    <div id="warning" class="warning hidden"></div>
+    <p class="help">
+      Cada Word debe tener el nombre en la fila "Nombre:" de la tabla y la fotografía incrustada
+      (como en el formato de solicitud de carnet). La planta se deja en blanco para escribirla a mano
+      o puede escribirla aquí antes de imprimir — es opcional.
+    </p>
+
+    <div id="tableWrap"></div>
+  </section>
+
+  <section class="panel">
+    <h2 style="margin:0">Vista previa de carnets</h2>
+    <p class="help">
+      Diseño basado en el carnet de referencia: logo, fotografía, nombre (primer nombre y primer apellido)
+      y un espacio para anotar la planta manualmente.
+    </p>
+    <div id="preview">
+      <div class="empty">Cargue uno o varios Word para comenzar.</div>
+    </div>
+  </section>
+
+  <div id="printArea"></div>
+
+</div>
+
+<script>
+const LOGO = "data:image/png;base64,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";
+
+let records = [];
+const $ = id => document.getElementById(id);
+
+function clean(v){
+  if(v === null || v === undefined) return "";
+  return String(v).trim();
+}
+
+function normalize(v){
+  return clean(v)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .toLowerCase();
+}
+
+function esc(v){
+  return clean(v)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;");
+}
+
+// Toma solo el primer nombre y el primer apellido de un nombre completo.
+function shortName(fullName){
+  const parts = clean(fullName).split(/\s+/).filter(Boolean);
+  if(parts.length <= 2) return parts.join(" ");
+  if(parts.length === 3) return parts[0] + " " + parts[1];
+  return parts[0] + " " + parts[2];
+}
+
+function showStatus(text, ok=false){
+  const el = $("status");
+  el.textContent = text;
+  el.classList.toggle("ok", ok);
+}
+
+function resolvePath(baseFolder, target){
+  if(!target) return null;
+  if(target.startsWith("/")) return target.replace(/^\/+/, "");
+  const baseParts = baseFolder ? baseFolder.split("/").filter(Boolean) : [];
+  const targetParts = target.split("/");
+  for(const part of targetParts){
+    if(part === "..") baseParts.pop();
+    else if(part === "." || part === "") continue;
+    else baseParts.push(part);
+  }
+  return baseParts.join("/");
+}
+
+// Concatena el texto de todos los <w:t> dentro de un <w:tc>, agrupando por
+// párrafo (los runs de un mismo párrafo no llevan espacio entre sí, ya que
+// Word puede partir una palabra en varios <w:r> por el corrector ortográfico).
+function getCellText(tc){
+  const paragraphs = Array.from(tc.getElementsByTagNameNS("*","p"));
+  return paragraphs
+    .map(p => Array.from(p.getElementsByTagNameNS("*","t")).map(t => t.textContent).join(""))
+    .join(" ")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+// Lee un .docx (ZIP) y extrae UNA O VARIAS personas: recorre TODAS las tablas
+// del documento; cada tabla que tenga una fila "Nombre:" se trata como una
+// solicitud independiente. La foto de cada persona se busca dentro de esa
+// misma tabla (no en todo el documento), emparejando por orden de aparición
+// nombre-foto dentro de la tabla. Así, un solo Word con varias solicitudes
+// pegadas (varias tablas) genera automáticamente varios carnets.
+async function parseSolicitudDocx(file){
+  const buffer = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buffer);
+  const parser = new DOMParser();
+
+  const docFile = zip.file("word/document.xml");
+  if(!docFile) throw new Error("No parece un archivo Word válido (falta word/document.xml).");
+  const docXml = await docFile.async("string");
+  const doc = parser.parseFromString(docXml, "application/xml");
+
+  // Mapa de relaciones (rId -> ruta de archivo de imagen) del documento completo.
+  const embedMap = {};
+  const relsFile = zip.file("word/_rels/document.xml.rels");
+  if(relsFile){
+    const relsDoc = parser.parseFromString(await relsFile.async("string"), "application/xml");
+    Array.from(relsDoc.getElementsByTagName("Relationship")).forEach(r=>{
+      embedMap[r.getAttribute("Id")] = resolvePath("word", r.getAttribute("Target"));
+    });
+  }
+
+  async function resolveBlipToDataUrl(blip){
+    const embedId = blip.getAttribute("r:embed") ||
+      blip.getAttributeNS("http://schemas.openxmlformats.org/officeDocument/2006/relationships","embed");
+    const imgPath = embedMap[embedId];
+    if(!imgPath) return null;
+    const imgFile = zip.file(imgPath);
+    if(!imgFile) return null;
+    const base64 = await imgFile.async("base64");
+    const ext = imgPath.split(".").pop().toLowerCase();
+    const mime = ext === "png" ? "image/png" : ext === "gif" ? "image/gif" : ext === "bmp" ? "image/bmp" : "image/jpeg";
+    return `data:${mime};base64,${base64}`;
+  }
+
+  const tables = Array.from(doc.getElementsByTagNameNS("*","tbl"));
+  const people = [];
+
+  for(const tbl of tables){
+    // Nombres encontrados en ESTA tabla, en el orden en que aparecen.
+    const names = [];
+    const rows = Array.from(tbl.children).filter(el => el.localName === "tr");
+    for(const tr of rows){
+      const cells = Array.from(tr.children).filter(el => el.localName === "tc");
+      if(cells.length < 2) continue;
+      const label = normalize(getCellText(cells[0]));
+      if(label.startsWith("nombre")){
+        names.push(getCellText(cells[1]));
+      }
+    }
+    if(!names.length) continue; // esta tabla no es una solicitud de carnet
+
+    // Fotos encontradas en ESTA misma tabla, en orden de aparición.
+    const blips = Array.from(tbl.getElementsByTagNameNS("*","blip"));
+    const photos = [];
+    for(const blip of blips){
+      photos.push(await resolveBlipToDataUrl(blip));
+    }
+
+    names.forEach((fullName, idx)=>{
+      people.push({ fullName: clean(fullName), photo: photos[idx] || photos[0] || null });
+    });
+  }
+
+  // Si no se detectó ninguna tabla con estructura reconocida, se devuelve un
+  // único registro vacío para que quede reflejado como advertencia.
+  if(!people.length){
+    people.push({ fullName: "", photo: null });
+  }
+
+  return people;
+}
+
+function renderTable(){
+  if(!records.length){ $("tableWrap").innerHTML=""; return; }
+  let html = `<table><thead><tr>
+    <th>#</th><th>Nombre (carnet)</th><th>Nombre completo</th><th>Archivo</th><th>Foto</th><th>Planta (manual, opcional)</th>
+  </tr></thead><tbody>`;
+  records.forEach((r,i)=>{
+    html += `<tr>
+      <td>${i+1}</td>
+      <td>${esc(r.name) || "<em>Sin nombre</em>"}</td>
+      <td>${esc(r.fullName) || "<em>No detectado</em>"}</td>
+      <td>${esc(r.fileName)}</td>
+      <td>${r.photo ? "Sí" : "No detectada"}</td>
+      <td><input type="text" data-id="${r.id}" value="${esc(r.planta)}" placeholder="Ej.: Río Nance"></td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  $("tableWrap").innerHTML = html;
+
+  $("tableWrap").querySelectorAll('input[type="text"]').forEach(input=>{
+    input.addEventListener("input", e=>{
+      const id = e.target.getAttribute("data-id");
+      const rec = records.find(r => String(r.id) === id);
+      if(rec){
+        rec.planta = e.target.value;
+        renderPreview();
+        renderPrint();
+      }
+    });
+  });
+}
+
+function cardInner(r, photoClass, plantaClass){
+  const photoHtml = r.photo
+    ? `<img class="photo" src="${r.photo}">`
+    : `<div class="${photoClass} placeholder">SIN<br>FOTO</div>`;
+  return `<img class="logo" src="${LOGO}">
+    ${photoHtml}
+    <div class="name">${esc(r.name) || "SIN NOMBRE"}</div>
+    <div class="${plantaClass}">${esc(r.planta)}</div>`;
+}
+
+function renderPreview(){
+  const box = $("preview");
+  if(!records.length){
+    box.innerHTML = '<div class="empty">Cargue uno o varios Word para comenzar.</div>';
+    return;
+  }
+  let html = '<div class="preview-grid">';
+  records.forEach(r=>{
+    const photoHtml = r.photo
+      ? `<img class="photo" src="${r.photo}">`
+      : `<div class="photo placeholder">SIN<br>FOTO</div>`;
+    html += `<div class="preview-card">
+      <h3>${esc(r.name) || "Sin nombre"}</h3>
+      <div class="mini-card">
+        <img class="logo" src="${LOGO}">
+        ${photoHtml}
+        <div class="name">${esc(r.name) || "SIN NOMBRE"}</div>
+        <div class="planta">${esc(r.planta)}</div>
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+function renderPrint(){
+  if(!records.length){ $("printArea").innerHTML=""; return; }
+  let html = '<div class="print-grid">';
+  records.forEach(r=>{
+    const photoHtml = r.photo
+      ? `<img class="photo" src="${r.photo}">`
+      : `<div class="photo placeholder">SIN FOTO</div>`;
+    html += `<div class="print-card">
+      <img class="logo" src="${LOGO}">
+      ${photoHtml}
+      <div class="name">${esc(r.name) || "SIN NOMBRE"}</div>
+      <div class="planta">${esc(r.planta)}</div>
+    </div>`;
+  });
+  html += '</div>';
+  $("printArea").innerHTML = html;
+}
+
+$("wordFiles").addEventListener("change", async e=>{
+  const files = Array.from(e.target.files || []);
+  if(!files.length) return;
+
+  showStatus(`Procesando ${files.length} archivo(s)...`);
+  records = [];
+  const warnings = [];
+
+  let nextId = 1;
+  for(const file of files){
+    try{
+      const people = await parseSolicitudDocx(file);
+      const multiple = people.length > 1;
+
+      people.forEach((p, idx)=>{
+        const label = multiple ? `${file.name} (persona ${idx+1} de ${people.length})` : file.name;
+        if(!p.fullName) warnings.push(`"${label}": no se pudo detectar el nombre (fila "Nombre:").`);
+        if(!p.photo) warnings.push(`"${label}": no se detectó fotografía incrustada.`);
+        records.push({
+          id: nextId++,
+          fileName: label,
+          fullName: p.fullName,
+          name: shortName(p.fullName),
+          photo: p.photo,
+          planta: ""
+        });
+      });
+
+      if(multiple){
+        showStatus(`"${file.name}": se detectaron ${people.length} solicitudes en un solo archivo.`);
+      }
+    }catch(err){
+      console.error(err);
+      warnings.push(`"${file.name}": ${err.message}`);
+    }
+  }
+
+  if(!records.length){
+    showStatus("No fue posible procesar los archivos seleccionados.");
+    $("previewBtn").disabled = true;
+    $("printBtn").disabled = true;
+    return;
+  }
+
+  if(warnings.length){
+    $("warning").classList.remove("hidden");
+    $("warning").innerHTML = "<b>Revisar:</b><br>• " + warnings.join("<br>• ");
+  }else{
+    $("warning").classList.add("hidden");
+  }
+
+  $("previewBtn").disabled = false;
+  $("printBtn").disabled = false;
+  showStatus(`${records.length} carnet(s) procesado(s) correctamente.`, true);
+
+  renderTable();
+  renderPreview();
+  renderPrint();
+});
+
+$("previewBtn").addEventListener("click", ()=>{
+  $("preview").scrollIntoView({behavior:"smooth"});
+});
+
+$("printBtn").addEventListener("click", ()=>{
+  renderPrint();
+  window.print();
+});
+
+$("clearBtn").addEventListener("click", ()=>{
+  records = [];
+  $("wordFiles").value = "";
+  $("warning").classList.add("hidden");
+  $("previewBtn").disabled = true;
+  $("printBtn").disabled = true;
+  $("tableWrap").innerHTML = "";
+  $("preview").innerHTML = '<div class="empty">Cargue uno o varios Word para comenzar.</div>';
+  $("printArea").innerHTML = "";
+  showStatus("Seleccione una o varias solicitudes en Word (.docx).");
+});
+</script>
+</body>
+</html>
